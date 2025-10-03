@@ -1,5 +1,7 @@
 # DINOv3画像検索ツール
 
+**日本語 | [English](README_en.md)**
+
 ![Screenshot](screenshot.png)
 
 DINOv3（Vision Transformer）を使用した画像検索アプリケーションです。PyQt6で美しいGUIを提供し、画像の特徴量を使った類似画像検索が可能です。
