@@ -80,9 +80,10 @@ python dinov3_search.py
 ## 技術仕様
 
 ### DINOv3モデル
-- モデル: `facebook/dinov2-base`
+- モデル: `facebook/dinov3-vitb16-pretrain-lvd1689m`
 - 入力サイズ: 224x224
-- 特徴量: 768次元（CLSトークン）
+- 特徴量: 768次元（pooler_output）
+- ライブラリ: Hugging Face Transformers
 
 ### データベーススキーマ
 
@@ -129,5 +130,5 @@ python dinov3_search.py
 
 ## 参考
 
-- [DINOv3 GitHub](https://github.com/facebookresearch/dinov3)
-- [Hugging Face - DINOv2](https://huggingface.co/facebook/dinov2-base)
+- [DINOv3 Paper](https://arxiv.org/abs/2304.07193)
+- [Hugging Face - DINOv3](https://huggingface.co/facebook/dinov3-vitb16-pretrain-lvd1689m)

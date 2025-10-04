@@ -80,9 +80,10 @@ The DINOv3 model will be automatically downloaded on the first launch.
 ## Technical Specifications
 
 ### DINOv3 Model
-- Model: `facebook/dinov2-base`
+- Model: `facebook/dinov3-vitb16-pretrain-lvd1689m`
 - Input size: 224x224
-- Features: 768 dimensions (CLS token)
+- Features: 768 dimensions (pooler_output)
+- Library: Hugging Face Transformers
 
 ### Database Schema
 
@@ -129,5 +130,5 @@ This project is released under the MIT License.
 
 ## References
 
-- [DINOv3 GitHub](https://github.com/facebookresearch/dinov3)
-- [Hugging Face - DINOv2](https://huggingface.co/facebook/dinov2-base)
+- [DINOv3 Paper](https://arxiv.org/abs/2304.07193)
+- [Hugging Face - DINOv3](https://huggingface.co/facebook/dinov3-vitb16-pretrain-lvd1689m)
