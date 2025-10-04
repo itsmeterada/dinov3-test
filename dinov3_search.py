@@ -14,6 +14,11 @@ import zipfile
 import tempfile
 from logging import getLogger
 
+# DINOv3モデルのインポートのためにパスを追加
+dinov3_cache_path = os.path.join(os.path.expanduser("~"), ".cache", "torch", "hub", "facebookresearch_dinov3_main")
+if os.path.exists(dinov3_cache_path) and dinov3_cache_path not in sys.path:
+    sys.path.insert(0, dinov3_cache_path)
+
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QPushButton, QComboBox,
                              QLineEdit, QTextEdit, QFrame, QScrollArea,
@@ -34,8 +39,22 @@ logger = getLogger(__name__)
 # DINOv3 Parameters
 # ======================
 
-# DINOv3モデル名（Hugging Faceから利用）
-MODEL_NAME = "facebook/dinov2-base"
+# モデル設定
+USE_DINOV3 = True
+
+if USE_DINOV3:
+    # DINOv3モデル名（直接重みファイルを使用）
+    # モデルの種類: vits16, vitb16, vitl16, vith16plus
+    MODEL_ARCH = "vitb16"  # ViT-B/16
+    MODEL_WEIGHTS_URL = "https://dl.fbaipublicfiles.com/dinov3/dinov3_vitb16/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth"
+    MODEL_NAME = f"dinov3_{MODEL_ARCH}"
+    USE_DIRECT_WEIGHTS = True
+else:
+    # DINOv2モデル名（Hugging Faceから利用）
+    MODEL_NAME = "facebook/dinov2-base"
+    MODEL_WEIGHTS_URL = None
+    USE_DIRECT_WEIGHTS = False
+
 IMAGE_SIZE = 224
 
 # カラーパレット（DINOv3のブランドカラーに合わせて）
@@ -80,19 +99,79 @@ class ModelLoaderThread(QThread):
             else:
                 self.progress.emit("CPUモードでモデルを読み込み中...")
 
-            # DINOv3モデルとプロセッサーの読み込み
-            self.progress.emit("DINOv3モデルを読み込み中...")
-            model = AutoModel.from_pretrained(MODEL_NAME)
-            processor = AutoImageProcessor.from_pretrained(MODEL_NAME)
+            # モデルの読み込み
+            model_display_name = "DINOv3" if USE_DINOV3 else "DINOv2"
+
+            if USE_DIRECT_WEIGHTS:
+                # DINOv3: 直接重みファイルをダウンロードして使用
+                self.progress.emit(f"{model_display_name}モデルを構築中...")
+                self.progress.emit(f"アーキテクチャ: {MODEL_ARCH}")
+
+                # モデルアーキテクチャに応じたパラメータ
+                if MODEL_ARCH == "vits16":
+                    embed_dim, num_heads, depth = 384, 6, 12
+                elif MODEL_ARCH == "vitb16":
+                    embed_dim, num_heads, depth = 768, 12, 12
+                elif MODEL_ARCH == "vitl16":
+                    embed_dim, num_heads, depth = 1024, 16, 24
+                elif MODEL_ARCH == "vith16plus":
+                    embed_dim, num_heads, depth = 1280, 16, 32
+                else:
+                    raise ValueError(f"未対応のアーキテクチャ: {MODEL_ARCH}")
+
+                # ViTモデルを構築
+                from dinov3.models.vision_transformer import DinoVisionTransformer
+
+                model = DinoVisionTransformer(
+                    img_size=IMAGE_SIZE,
+                    patch_size=16,
+                    embed_dim=embed_dim,
+                    depth=depth,
+                    num_heads=num_heads,
+                    mlp_ratio=4,
+                    block_chunks=0,
+                )
+
+                self.progress.emit("モデルアーキテクチャの構築完了")
+                self.progress.emit(f"重みファイルをダウンロード中: {MODEL_WEIGHTS_URL}")
+
+                # 重みファイルをダウンロード
+                state_dict = torch.hub.load_state_dict_from_url(
+                    MODEL_WEIGHTS_URL,
+                    map_location="cpu",
+                    progress=True
+                )
+
+                # 重みをロード
+                model.load_state_dict(state_dict, strict=False)
+                self.progress.emit("重みファイルの読み込み完了")
+
+                processor = None  # DINOv3は手動前処理を使用
+
+            else:
+                # DINOv2: Hugging Faceから読み込み
+                self.progress.emit(f"{model_display_name}モデルをダウンロード中（Hugging Face）...")
+                model = AutoModel.from_pretrained(MODEL_NAME)
+                try:
+                    processor = AutoImageProcessor.from_pretrained(MODEL_NAME)
+                except:
+                    processor = None
+
+            self.progress.emit(f"{model_display_name}モデルの読み込み完了")
 
             model = model.to(device)
             model.eval()
 
-            self.progress.emit("DINOv3モデルの読み込みが完了しました")
+            model_name = "DINOv3" if USE_DINOV3 else "DINOv2"
+            self.progress.emit(f"{model_name}モデルの読み込みが完了しました")
             self.finished.emit(True, model, processor)
 
         except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
             self.progress.emit(f"エラー: {e}")
+            self.progress.emit(f"詳細: {error_details[:500]}")
+            print(f"モデル読み込みエラーの詳細:\n{error_details}")
             self.finished.emit(False, None, None)
 
 class DirectoryProcessorThread(QThread):
@@ -355,21 +434,54 @@ class FeatureExtractor:
         self.processor = processor
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+        # DINOv3用の画像変換（ImageNetの標準値）
+        self.transform = transforms.Compose([
+            transforms.Resize(256, interpolation=transforms.InterpolationMode.BICUBIC),
+            transforms.CenterCrop(IMAGE_SIZE),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+
     def extract_features(self, image):
         """画像から特徴量を抽出"""
         try:
             if image.mode != 'RGB':
                 image = image.convert('RGB')
 
-            # 画像を前処理
-            inputs = self.processor(images=image, return_tensors="pt")
-            inputs = {k: v.to(self.device) for k, v in inputs.items()}
-
             # 特徴量を抽出
             with torch.no_grad():
-                outputs = self.model(**inputs)
-                # CLSトークンの特徴量を使用
-                features = outputs.last_hidden_state[:, 0, :].cpu().numpy()
+                if USE_DINOV3 or self.processor is None:
+                    # DINOv3または手動前処理を使用
+                    pixel_values = self.transform(image).unsqueeze(0).to(self.device)
+                    features = self.model(pixel_values)
+                else:
+                    # DINOv2でプロセッサーを使用
+                    inputs = self.processor(images=image, return_tensors="pt")
+                    inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                    features = self.model(**inputs)
+
+                # 出力形式を確認して適切に処理
+                if isinstance(features, dict):
+                    # 辞書形式の場合、CLSトークンまたはpooled_outputを使用
+                    if 'pooler_output' in features:
+                        features = features['pooler_output'].cpu().numpy()
+                    elif 'last_hidden_state' in features:
+                        features = features['last_hidden_state'][:, 0, :].cpu().numpy()
+                    else:
+                        # その他のキーをチェック
+                        features = list(features.values())[0]
+                        if len(features.shape) == 3:  # [batch, seq_len, dim]
+                            features = features[:, 0, :].cpu().numpy()
+                        else:
+                            features = features.cpu().numpy()
+                elif isinstance(features, torch.Tensor):
+                    # テンソル形式の場合
+                    if len(features.shape) == 3:  # [batch, seq_len, dim]
+                        features = features[:, 0, :].cpu().numpy()
+                    else:  # [batch, dim]
+                        features = features.cpu().numpy()
+                else:
+                    raise ValueError(f"予期しない出力形式: {type(features)}")
 
             # 正規化
             norm = np.linalg.norm(features, axis=1, keepdims=True)
@@ -714,7 +826,8 @@ class DINOv3ImageSearchApp(QMainWindow):
 
     def setup_ui(self):
         """UIのセットアップ"""
-        self.setWindowTitle("DINOv3画像検索ツール")
+        model_type = "DINOv3" if USE_DINOV3 else "DINOv2"
+        self.setWindowTitle(f"{model_type}画像検索ツール")
         self.setGeometry(100, 100, 1200, 800)
 
         # メインウィジェット
@@ -761,8 +874,9 @@ class DINOv3ImageSearchApp(QMainWindow):
         header_layout = QHBoxLayout(header_frame)
         header_layout.setContentsMargins(20, 10, 20, 10)
 
-        # DINOv3ロゴ
-        logo_label = QLabel("DINOv3")
+        # ロゴ
+        model_type = "DINOv3" if USE_DINOV3 else "DINOv2"
+        logo_label = QLabel(model_type)
         logo_label.setStyleSheet("""
             QLabel {
                 color: white;
@@ -1053,15 +1167,16 @@ class DINOv3ImageSearchApp(QMainWindow):
     def on_model_loaded(self, success, model, processor):
         """モデル読み込み完了時の処理"""
         self.progress_bar.setVisible(False)
+        model_name = "DINOv3" if USE_DINOV3 else "DINOv2"
 
         if success:
             self.feature_extractor = FeatureExtractor(model, processor)
             self.model_loaded = True
-            self.update_status("DINOv3モデルの読み込みが完了しました。")
+            self.update_status(f"{model_name}モデルの読み込みが完了しました。")
             self.update_image_count()
         else:
-            self.update_status("DINOv3モデルの読み込みに失敗しました。")
-            QMessageBox.critical(self, "エラー", "DINOv3モデルの読み込みに失敗しました。")
+            self.update_status(f"{model_name}モデルの読み込みに失敗しました。")
+            QMessageBox.critical(self, "エラー", f"{model_name}モデルの読み込みに失敗しました。")
 
     def update_status(self, message):
         """ステータスメッセージを更新"""
