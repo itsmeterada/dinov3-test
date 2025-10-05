@@ -42,12 +42,24 @@ logger = getLogger(__name__)
 # モデル設定
 USE_DINOV3 = True  # DINOv3を使用
 
-# DINOv3モデル名（直接重みファイルを使用）
-# モデルの種類: vits16, vitb16, vitl16, vitg14
-MODEL_ARCH = "vitb16"  # ViT-B/16
+# 利用可能なDINOv3モデルリスト
+AVAILABLE_MODELS = {
+    "ViT-S/16 (21M)": "facebook/dinov3-vits16-pretrain-lvd1689m",
+    "ViT-S+/16 (29M)": "facebook/dinov3-vits16plus-pretrain-lvd1689m",
+    "ViT-B/16 (86M)": "facebook/dinov3-vitb16-pretrain-lvd1689m",
+    "ViT-L/16 (300M)": "facebook/dinov3-vitl16-pretrain-lvd1689m",
+    "ViT-H+/16 (840M)": "facebook/dinov3-vith16plus-pretrain-lvd1689m",
+    "ViT-7B/16 (6.7B)": "facebook/dinov3-vit7b16-pretrain-lvd1689m",
+    "ConvNeXt Tiny (29M)": "facebook/dinov3-convnext-tiny-pretrain-lvd1689m",
+    "ConvNeXt Small (50M)": "facebook/dinov3-convnext-small-pretrain-lvd1689m",
+    "ConvNeXt Base (89M)": "facebook/dinov3-convnext-base-pretrain-lvd1689m",
+    "ConvNeXt Large (198M)": "facebook/dinov3-convnext-large-pretrain-lvd1689m",
+    "ViT-L/16 SAT (300M)": "facebook/dinov3-vitl16-pretrain-sat493m",
+    "ViT-7B/16 SAT (6.7B)": "facebook/dinov3-vit7b16-pretrain-sat493m",
+}
 
-MODEL_NAME = f"dinov3_{MODEL_ARCH}"
-USE_DIRECT_WEIGHTS = True
+# デフォルトモデル
+DEFAULT_MODEL = "ViT-B/16 (86M)"
 
 IMAGE_SIZE = 224
 
@@ -81,6 +93,10 @@ class ModelLoaderThread(QThread):
     progress = pyqtSignal(str)
     finished = pyqtSignal(bool, object, object)
 
+    def __init__(self, model_name=None):
+        super().__init__()
+        self.model_name = model_name or AVAILABLE_MODELS[DEFAULT_MODEL]
+
     def run(self):
         try:
             self.progress.emit("DINOv3モデルをダウンロード中...")
@@ -100,15 +116,13 @@ class ModelLoaderThread(QThread):
             try:
                 from transformers import AutoImageProcessor, AutoModel
 
-                pretrained_model_name = "facebook/dinov3-vitb16-pretrain-lvd1689m"
+                self.progress.emit(f"Downloading {self.model_name} from Hugging Face...")
+                self.progress.emit("(First time may take several minutes)")
 
-                self.progress.emit(f"Hugging Faceから {pretrained_model_name} をダウンロード中...")
-                self.progress.emit("（初回は数分かかります）")
+                processor = AutoImageProcessor.from_pretrained(self.model_name)
+                model = AutoModel.from_pretrained(self.model_name)
 
-                processor = AutoImageProcessor.from_pretrained(pretrained_model_name)
-                model = AutoModel.from_pretrained(pretrained_model_name)
-
-                self.progress.emit("✓ DINOv3モデルのロード成功")
+                self.progress.emit("✓ DINOv3 model loaded successfully")
 
             except Exception as load_error:
                 self.progress.emit(f"エラー: {str(load_error)[:200]}")
@@ -125,7 +139,7 @@ class ModelLoaderThread(QThread):
             error_details = traceback.format_exc()
             self.progress.emit(f"エラー: {e}")
             self.progress.emit(f"詳細: {error_details[:500]}")
-            print(f"モデル読み込みエラーの詳細:\n{error_details}")
+            print(f"Model loading error details:\n{error_details}")
             self.finished.emit(False, None, None)
 
 class DirectoryProcessorThread(QThread):
@@ -134,11 +148,12 @@ class DirectoryProcessorThread(QThread):
     finished = pyqtSignal(str)
     count_updated = pyqtSignal()
 
-    def __init__(self, directory_path, db_path, feature_extractor):
+    def __init__(self, directory_path, db_path, feature_extractor, model_name=None):
         super().__init__()
         self.directory_path = directory_path
         self.db_path = db_path
         self.feature_extractor = feature_extractor
+        self.model_name = model_name
 
     def run(self):
         try:
@@ -183,6 +198,20 @@ class DirectoryProcessorThread(QThread):
 
                 except Exception as e:
                     self.progress.emit(f"エラー ({os.path.basename(image_path)}): {e}")
+
+            # モデル情報を設定
+            if self.model_name and added_files > 0:
+                cursor.execute('''
+                CREATE TABLE IF NOT EXISTS model_info (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    model_name TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                ''')
+                cursor.execute('SELECT model_name FROM model_info WHERE id = 1')
+                if not cursor.fetchone():
+                    cursor.execute('INSERT INTO model_info (id, model_name) VALUES (1, ?)', (self.model_name,))
 
             conn.commit()
             conn.close()
@@ -237,7 +266,7 @@ class DirectoryProcessorThread(QThread):
 
             return True
         except Exception as e:
-            print(f"エラー ({os.path.basename(file_path)}): {e}")
+            print(f"Error ({os.path.basename(file_path)}): {e}")
             return False
 
 class ZipProcessorThread(QThread):
@@ -246,11 +275,12 @@ class ZipProcessorThread(QThread):
     finished = pyqtSignal(str)
     count_updated = pyqtSignal()
 
-    def __init__(self, zip_path, db_path, feature_extractor):
+    def __init__(self, zip_path, db_path, feature_extractor, model_name=None):
         super().__init__()
         self.zip_path = zip_path
         self.db_path = db_path
         self.feature_extractor = feature_extractor
+        self.model_name = model_name
 
     def run(self):
         temp_dir = None
@@ -318,6 +348,20 @@ class ZipProcessorThread(QThread):
                         self.progress.emit(f"エラー ({os.path.basename(file_path)}): {e}")
                         processed_files += 1
 
+                # モデル情報を設定
+                if self.model_name and added_files > 0:
+                    cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS model_info (
+                        id INTEGER PRIMARY KEY CHECK (id = 1),
+                        model_name TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                    ''')
+                    cursor.execute('SELECT model_name FROM model_info WHERE id = 1')
+                    if not cursor.fetchone():
+                        cursor.execute('INSERT INTO model_info (id, model_name) VALUES (1, ?)', (self.model_name,))
+
                 conn.commit()
                 conn.close()
 
@@ -336,7 +380,7 @@ class ZipProcessorThread(QThread):
                 try:
                     shutil.rmtree(temp_dir)
                 except Exception as e:
-                    print(f"一時ディレクトリの削除に失敗: {e}")
+                    print(f"Failed to delete temporary directory: {e}")
 
     def calculate_file_hash(self, file_path):
         """ファイルハッシュを計算"""
@@ -378,7 +422,7 @@ class ZipProcessorThread(QThread):
 
             return True
         except Exception as e:
-            print(f"エラー ({os.path.basename(file_path)}): {e}")
+            print(f"Error ({os.path.basename(file_path)}): {e}")
             return False
 
 class FeatureExtractor:
@@ -400,14 +444,14 @@ class FeatureExtractor:
         """画像から特徴量を抽出"""
         try:
             # デバッグ: 入力画像の情報を出力
-            print(f"\n=== 入力画像デバッグ ===")
-            print(f"画像モード: {image.mode}")
-            print(f"画像サイズ: {image.size}")
+            print(f"\n=== Input Image Debug ===")
+            print(f"Image mode: {image.mode}")
+            print(f"Image size: {image.size}")
             # 画像の一部をハッシュ化して表示
             import hashlib
             img_bytes = image.tobytes()
             img_hash = hashlib.md5(img_bytes[:1000]).hexdigest()[:16]
-            print(f"画像ハッシュ（最初の1000バイト）: {img_hash}")
+            print(f"Image hash (first 1000 bytes): {img_hash}")
 
             if image.mode != 'RGB':
                 image = image.convert('RGB')
@@ -419,9 +463,9 @@ class FeatureExtractor:
 
                 # デバッグ: 変換後のテンソル情報
                 pixel_values = inputs['pixel_values']
-                print(f"変換後テンソルの形状: {pixel_values.shape}")
-                print(f"変換後テンソルの平均値: {pixel_values.mean().item():.6f}")
-                print(f"変換後テンソルの標準偏差: {pixel_values.std().item():.6f}")
+                print(f"Converted tensor shape: {pixel_values.shape}")
+                print(f"Converted tensor mean: {pixel_values.mean().item():.6f}")
+                print(f"Converted tensor std: {pixel_values.std().item():.6f}")
 
                 # モデルで特徴量を抽出
                 outputs = self.model(**inputs)
@@ -433,21 +477,21 @@ class FeatureExtractor:
             features = features.flatten()
 
             # デバッグ出力
-            print(f"\n=== 特徴量抽出デバッグ ===")
-            print(f"正規化前の特徴量形状: {features.shape}")
-            print(f"正規化前のノルム: {np.linalg.norm(features):.6f}")
+            print(f"\n=== Feature Extraction Debug ===")
+            print(f"Feature shape before normalization: {features.shape}")
+            print(f"Norm before normalization: {np.linalg.norm(features):.6f}")
 
             # 正規化
             norm = np.linalg.norm(features)
             if norm > 0:
                 features = features / norm
 
-            print(f"正規化後のノルム: {np.linalg.norm(features):.6f}")
-            print(f"最初の10要素: {features[:10]}")
+            print(f"Norm after normalization: {np.linalg.norm(features):.6f}")
+            print(f"First 10 elements: {features[:10]}")
 
             return features
         except Exception as e:
-            print(f"特徴量抽出エラー: {e}")
+            print(f"Feature extraction error: {e}")
             import traceback
             traceback.print_exc()
             return None
@@ -664,7 +708,7 @@ class DropAreaWidget(QLabel):
                 self.show_error_message("画像の変換に失敗しました")
 
         except Exception as e:
-            print(f"PIL画像表示エラー: {e}")
+            print(f"PIL image display error: {e}")
             import traceback
             traceback.print_exc()
             self.show_error_message("画像の表示に失敗しました")
@@ -688,7 +732,7 @@ class DropAreaWidget(QLabel):
             self.restore_image_display_style()
 
         except Exception as e:
-            print(f"QPixmap表示エラー: {e}")
+            print(f"QPixmap display error: {e}")
             self.show_error_message("画像の表示に失敗しました")
 
     def show_error_message(self, message):
@@ -755,7 +799,7 @@ class DINOv3ImageSearchApp(QMainWindow):
             self.initialize_single_database(default_db_path)
             self.db_files.append(default_db_file)
 
-    def initialize_single_database(self, db_path):
+    def initialize_single_database(self, db_path, model_name=None):
         """単一のデータベースを初期化"""
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
@@ -778,8 +822,74 @@ class DINOv3ImageSearchApp(QMainWindow):
         )
         ''')
 
+        # モデル情報を保存するテーブル
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS model_info (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            model_name TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        ''')
+
+        # モデル情報が未設定の場合は設定
+        if model_name:
+            cursor.execute('SELECT model_name FROM model_info WHERE id = 1')
+            existing = cursor.fetchone()
+            if not existing:
+                cursor.execute('INSERT INTO model_info (id, model_name) VALUES (1, ?)', (model_name,))
+
         conn.commit()
         conn.close()
+
+    def get_database_model(self, db_path):
+        """データベースに保存されているモデル名を取得"""
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+
+            # model_infoテーブルが存在するか確認
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='model_info'")
+            if not cursor.fetchone():
+                conn.close()
+                return None
+
+            cursor.execute('SELECT model_name FROM model_info WHERE id = 1')
+            result = cursor.fetchone()
+            conn.close()
+
+            return result[0] if result else None
+        except Exception as e:
+            print(f"Model info retrieval error: {e}")
+            return None
+
+    def set_database_model(self, db_path, model_name):
+        """データベースにモデル名を設定"""
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS model_info (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                model_name TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            ''')
+
+            cursor.execute('SELECT model_name FROM model_info WHERE id = 1')
+            existing = cursor.fetchone()
+
+            if existing:
+                cursor.execute('UPDATE model_info SET model_name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1', (model_name,))
+            else:
+                cursor.execute('INSERT INTO model_info (id, model_name) VALUES (1, ?)', (model_name,))
+
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"Model info setting error: {e}")
 
     def setup_ui(self):
         """UIのセットアップ"""
@@ -872,6 +982,21 @@ class DINOv3ImageSearchApp(QMainWindow):
 
         controls_layout = QVBoxLayout(controls_frame)
 
+        # モデル選択行
+        model_layout = QHBoxLayout()
+
+        model_layout.addWidget(QLabel("Model:"))
+
+        self.model_combo = QComboBox()
+        self.model_combo.addItems(AVAILABLE_MODELS.keys())
+        self.model_combo.setCurrentText(DEFAULT_MODEL)
+        self.model_combo.currentTextChanged.connect(self.on_model_change)
+        model_layout.addWidget(self.model_combo)
+
+        model_layout.addStretch()
+
+        controls_layout.addLayout(model_layout)
+
         # データベース管理行
         db_layout = QHBoxLayout()
 
@@ -884,8 +1009,12 @@ class DINOv3ImageSearchApp(QMainWindow):
         self.db_combo.currentTextChanged.connect(self.on_database_change)
         db_layout.addWidget(self.db_combo)
 
-        self.image_count_label = QLabel("(0 枚)")
+        self.image_count_label = QLabel("(0 images)")
         db_layout.addWidget(self.image_count_label)
+
+        self.db_model_label = QLabel("")
+        self.db_model_label.setStyleSheet(f"color: {COLORS['secondary']}; font-style: italic;")
+        db_layout.addWidget(self.db_model_label)
 
         db_layout.addStretch()
 
@@ -1087,11 +1216,49 @@ class DINOv3ImageSearchApp(QMainWindow):
                 border: 2px solid {COLORS['border']};
                 border-radius: 4px;
                 background-color: white;
+                color: {COLORS['text']};
                 min-width: 150px;
             }}
 
             QComboBox:focus {{
                 border-color: {COLORS['primary']};
+            }}
+
+            QComboBox::drop-down {{
+                border: none;
+                width: 20px;
+            }}
+
+            QComboBox::down-arrow {{
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 5px solid {COLORS['text']};
+                margin-right: 5px;
+            }}
+
+            QComboBox QAbstractItemView {{
+                background-color: white;
+                color: {COLORS['text']};
+                selection-background-color: {COLORS['primary']};
+                selection-color: white;
+                border: 1px solid {COLORS['border']};
+                outline: none;
+            }}
+
+            QComboBox QAbstractItemView::item {{
+                padding: 5px;
+                min-height: 25px;
+            }}
+
+            QComboBox QAbstractItemView::item:hover {{
+                background-color: {COLORS['secondary']};
+                color: white;
+            }}
+
+            QComboBox QAbstractItemView::item:selected {{
+                background-color: {COLORS['primary']};
+                color: white;
             }}
 
             QLineEdit {{
@@ -1111,15 +1278,33 @@ class DINOv3ImageSearchApp(QMainWindow):
             }}
         """)
 
-    def load_models(self):
+    def load_models(self, model_name=None):
         """モデルの読み込み"""
-        self.model_thread = ModelLoaderThread()
+        self.model_thread = ModelLoaderThread(model_name)
         self.model_thread.progress.connect(self.update_status)
         self.model_thread.finished.connect(self.on_model_loaded)
         self.model_thread.start()
 
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)
+
+    def on_model_change(self, model_display_name):
+        """モデル変更時の処理"""
+        model_name = AVAILABLE_MODELS.get(model_display_name)
+        if not model_name:
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Model Change",
+            f"Load {model_display_name}?\n\nNote: Larger models take longer to load and use more memory.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.model_loaded = False
+            self.feature_extractor = None
+            self.load_models(model_name)
 
     def on_model_loaded(self, success, model, processor):
         """モデル読み込み完了時の処理"""
@@ -1133,7 +1318,7 @@ class DINOv3ImageSearchApp(QMainWindow):
             self.update_image_count()
         else:
             self.update_status(f"{model_name}モデルの読み込みに失敗しました。")
-            QMessageBox.critical(self, "エラー", f"{model_name}モデルの読み込みに失敗しました。")
+            QMessageBox.critical(self, "Error", f"Failed to load {model_name} model.")
 
     def update_status(self, message):
         """ステータスメッセージをRefresh"""
@@ -1142,7 +1327,8 @@ class DINOv3ImageSearchApp(QMainWindow):
     def update_image_count(self):
         """画像枚数をRefresh"""
         if not self.db_combo.currentText():
-            self.image_count_label.setText("(0 枚)")
+            self.image_count_label.setText("(0 images)")
+            self.db_model_label.setText("")
             return
 
         try:
@@ -1159,10 +1345,29 @@ class DINOv3ImageSearchApp(QMainWindow):
                 count = cursor.fetchone()[0]
 
             conn.close()
-            self.image_count_label.setText(f"({count} 枚)")
+            self.image_count_label.setText(f"({count} images)")
+
+            # データベースのモデル情報を表示
+            db_model = self.get_database_model(db_path)
+            if db_model:
+                # モデル名からわかりやすい表示名を取得
+                display_name = None
+                for name, model_id in AVAILABLE_MODELS.items():
+                    if model_id == db_model:
+                        display_name = name
+                        break
+
+                if display_name:
+                    self.db_model_label.setText(f"[{display_name}]")
+                else:
+                    self.db_model_label.setText(f"[{db_model}]")
+            else:
+                self.db_model_label.setText("[Model not set]")
+
         except Exception as e:
-            self.image_count_label.setText("(エラー)")
-            print(f"画像枚数取得エラー: {e}")
+            self.image_count_label.setText("(Error)")
+            self.db_model_label.setText("")
+            print(f"Image count retrieval error: {e}")
 
     def on_database_change(self, db_name):
         """データベース変更時の処理"""
@@ -1173,7 +1378,7 @@ class DINOv3ImageSearchApp(QMainWindow):
     def handle_dropped_files(self, files):
         """ドロップされたファイルを処理"""
         if not self.model_loaded:
-            QMessageBox.information(self, "情報", "DINOv3モデルがまだ読み込まれていません。しばらくお待ちください。")
+            QMessageBox.information(self, "Information", "DINOv3 model is still loading. Please wait.")
             return
 
         for file_path in files:
@@ -1191,7 +1396,7 @@ class DINOv3ImageSearchApp(QMainWindow):
     def select_image(self):
         """画像ファイルを選択"""
         if not self.model_loaded:
-            QMessageBox.information(self, "情報", "DINOv3モデルがまだ読み込まれていません。")
+            QMessageBox.information(self, "Information", "DINOv3 model is still loading.")
             return
 
         file_path, _ = QFileDialog.getOpenFileName(
@@ -1205,7 +1410,7 @@ class DINOv3ImageSearchApp(QMainWindow):
     def select_folder(self):
         """Select Folder"""
         if not self.model_loaded:
-            QMessageBox.information(self, "情報", "DINOv3モデルがまだ読み込まれていません。")
+            QMessageBox.information(self, "Information", "DINOv3 model is still loading.")
             return
 
         folder_path = QFileDialog.getExistingDirectory(self, "Select Folder")
@@ -1216,7 +1421,7 @@ class DINOv3ImageSearchApp(QMainWindow):
     def select_zip(self):
         """ZIPファイルを選択"""
         if not self.model_loaded:
-            QMessageBox.information(self, "情報", "DINOv3モデルがまだ読み込まれていません。")
+            QMessageBox.information(self, "Information", "DINOv3 model is still loading.")
             return
 
         file_path, _ = QFileDialog.getOpenFileName(
@@ -1243,16 +1448,16 @@ class DINOv3ImageSearchApp(QMainWindow):
             self.extract_and_search_features(image)
 
         except Exception as e:
-            print(f"画像処理エラー: {e}")
+            print(f"Image processing error: {e}")
             import traceback
             traceback.print_exc()
             self.update_status(f"画像処理エラー: {e}")
-            QMessageBox.warning(self, "警告", f"画像処理中にエラーが発生しました:\n{str(e)[:100]}...")
+            QMessageBox.warning(self, "Warning", f"Error occurred during image processing:\n{str(e)[:100]}...")
 
     def process_zip_file(self, zip_path):
         """ZIPファイルを処理"""
         if not self.feature_extractor:
-            QMessageBox.information(self, "情報", "モデルがまだ読み込まれていません。")
+            QMessageBox.information(self, "Information", "Model is still loading.")
             return
 
         try:
@@ -1269,9 +1474,10 @@ class DINOv3ImageSearchApp(QMainWindow):
         self.progress_bar.setRange(0, 0)
 
         db_path = os.path.join(mypath, self.db_combo.currentText())
+        current_model_id = AVAILABLE_MODELS.get(self.model_combo.currentText())
 
         self.zip_thread = ZipProcessorThread(
-            zip_path, db_path, self.feature_extractor
+            zip_path, db_path, self.feature_extractor, current_model_id
         )
         self.zip_thread.progress.connect(self.update_status)
         self.zip_thread.finished.connect(self.on_zip_processed)
@@ -1292,15 +1498,15 @@ class DINOv3ImageSearchApp(QMainWindow):
 
             if feature_vector is None:
                 self.update_status("特徴量の抽出に失敗しました。")
-                QMessageBox.warning(self, "警告", "特徴量の抽出に失敗しました。")
+                QMessageBox.warning(self, "Warning", "Failed to extract features.")
                 return
 
             self.search_similar_images(feature_vector)
 
         except Exception as e:
-            print(f"特徴量抽出エラー: {e}")
-            self.update_status(f"特徴量抽出エラー: {e}")
-            QMessageBox.warning(self, "警告", f"特徴量抽出中にエラーが発生しました:\n{str(e)[:100]}...")
+            print(f"Feature extraction error: {e}")
+            self.update_status(f"Feature extraction error: {e}")
+            QMessageBox.warning(self, "Warning", f"Error occurred during feature extraction:\n{str(e)[:100]}...")
 
     def search_similar_images(self, query_features):
         """類似画像を検索"""
@@ -1320,10 +1526,10 @@ class DINOv3ImageSearchApp(QMainWindow):
                 return
 
             # デバッグ: クエリ特徴量の情報を出力
-            print(f"\n=== 類似度計算デバッグ ===")
-            print(f"クエリ特徴量の形状: {query_features.shape}")
-            print(f"クエリ特徴量のノルム: {np.linalg.norm(query_features):.6f}")
-            print(f"クエリ特徴量の最初の10要素: {query_features[:10]}")
+            print(f"\n=== Similarity Calculation Debug ===")
+            print(f"Query feature shape: {query_features.shape}")
+            print(f"Query feature norm: {np.linalg.norm(query_features):.6f}")
+            print(f"Query feature first 10 elements: {query_features[:10]}")
 
             similarities = []
             for result_id, result_bytes in results:
@@ -1334,9 +1540,9 @@ class DINOv3ImageSearchApp(QMainWindow):
 
                 # デバッグ: 最初の3件の類似度計算を詳しく出力
                 if len(similarities) <= 3:
-                    print(f"\nDB画像ID {result_id}:")
-                    print(f"  DB特徴量の形状: {result_features.shape}")
-                    print(f"  DB特徴量のノルム: {np.linalg.norm(result_features):.6f}")
+                    print(f"\nDB Image ID {result_id}:")
+                    print(f"  DB feature shape: {result_features.shape}")
+                    print(f"  DB feature norm: {np.linalg.norm(result_features):.6f}")
                     print(f"  Similarity: {similarity:.6f}")
 
             similarities.sort(key=lambda x: x[1], reverse=True)
@@ -1362,7 +1568,7 @@ class DINOv3ImageSearchApp(QMainWindow):
 
         except Exception as e:
             self.update_status(f"類似画像検索エラー: {e}")
-            QMessageBox.warning(self, "警告", f"類似画像検索中にエラーが発生しました:\n{str(e)[:100]}...")
+            QMessageBox.warning(self, "Warning", f"Error occurred during similar image search:\n{str(e)[:100]}...")
 
     def display_similar_images(self, similar_images):
         """類似画像を表示"""
@@ -1382,9 +1588,10 @@ class DINOv3ImageSearchApp(QMainWindow):
         self.progress_bar.setRange(0, 0)
 
         db_path = os.path.join(mypath, self.db_combo.currentText())
+        current_model_id = AVAILABLE_MODELS.get(self.model_combo.currentText())
 
         self.dir_thread = DirectoryProcessorThread(
-            directory_path, db_path, self.feature_extractor
+            directory_path, db_path, self.feature_extractor, current_model_id
         )
         self.dir_thread.progress.connect(self.update_status)
         self.dir_thread.finished.connect(self.on_directory_processed)
@@ -1400,7 +1607,7 @@ class DINOv3ImageSearchApp(QMainWindow):
         """新規データベースを作成"""
         db_name = self.new_db_entry.text().strip()
         if not db_name:
-            QMessageBox.warning(self, "警告", "データベース名を入力してください。")
+            QMessageBox.warning(self, "Warning", "Please enter a database name.")
             return
 
         if not db_name.lower().endswith('.db'):
@@ -1408,7 +1615,7 @@ class DINOv3ImageSearchApp(QMainWindow):
 
         db_path = os.path.join(mypath, db_name)
         if os.path.exists(db_path):
-            QMessageBox.warning(self, "警告", f"データベース '{db_name}' は既に存在します。")
+            QMessageBox.warning(self, "Warning", f"Database '{db_name}' already exists.")
             return
 
         self.initialize_single_database(db_path)
@@ -1416,18 +1623,18 @@ class DINOv3ImageSearchApp(QMainWindow):
         self.db_combo.setCurrentText(db_name)
         self.update_image_count()
 
-        QMessageBox.information(self, "情報", f"データベース '{db_name}' を作成しました。")
+        QMessageBox.information(self, "Information", f"Database '{db_name}' created.")
 
     def clear_database(self):
         """データベースを消去"""
         if not self.db_combo.currentText():
-            QMessageBox.warning(self, "警告", "データベースが選択されていません。")
+            QMessageBox.warning(self, "Warning", "No database selected.")
             return
 
         reply = QMessageBox.question(
-            self, "確認",
-            f"データベース '{self.db_combo.currentText()}' の内容を消去します。"
-            "この操作は元に戻せません。続行しますか？",
+            self, "Confirmation",
+            f"Clear contents of database '{self.db_combo.currentText()}'.\n"
+            "This operation cannot be undone. Continue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
 
@@ -1444,24 +1651,24 @@ class DINOv3ImageSearchApp(QMainWindow):
                 conn.commit()
                 conn.close()
 
-                QMessageBox.information(self, "情報", f"データベース '{self.db_combo.currentText()}' を消去しました。")
+                QMessageBox.information(self, "Information", f"Database '{self.db_combo.currentText()}' cleared.")
                 self.update_image_count()
 
             except Exception as e:
-                QMessageBox.critical(self, "エラー", f"データベースの消去中にエラーが発生しました: {e}")
+                QMessageBox.critical(self, "Error", f"Error occurred while clearing database: {e}")
 
     def delete_database(self):
         """データベースファイルを削除"""
         if not self.db_combo.currentText():
-            QMessageBox.warning(self, "警告", "データベースが選択されていません。")
+            QMessageBox.warning(self, "Warning", "No database selected.")
             return
 
         current_db = self.db_combo.currentText()
 
         reply = QMessageBox.question(
-            self, "確認",
-            f"データベースファイル '{current_db}' を完全に削除します。"
-            "この操作は元に戻せません。続行しますか？",
+            self, "Confirmation",
+            f"Completely delete database file '{current_db}'.\n"
+            "This operation cannot be undone. Continue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
 
@@ -1471,14 +1678,14 @@ class DINOv3ImageSearchApp(QMainWindow):
                 os.remove(db_path)
                 self.refresh_db_list()
 
-                QMessageBox.information(self, "情報", f"データベースファイル '{current_db}' を削除しました。")
+                QMessageBox.information(self, "Information", f"Database file '{current_db}' deleted.")
 
                 if self.db_files:
                     self.db_combo.setCurrentText(self.db_files[0])
                     self.update_image_count()
 
             except Exception as e:
-                QMessageBox.critical(self, "エラー", f"データベースの削除中にエラーが発生しました: {e}")
+                QMessageBox.critical(self, "Error", f"Error occurred while deleting database: {e}")
 
     def clear_image_display(self):
         """Image Display Areaをクリア"""
@@ -1494,12 +1701,41 @@ class DINOv3ImageSearchApp(QMainWindow):
     def add_current_image_to_db(self):
         """現在表示中の画像をデータベースに追加"""
         if not self.current_image or not self.model_loaded:
-            QMessageBox.warning(self, "警告", "追加する画像がないか、モデルが読み込まれていません。")
+            QMessageBox.warning(self, "Warning", "No image to add or model not loaded.")
             return
 
         if not self.db_combo.currentText():
-            QMessageBox.warning(self, "警告", "データベースが選択されていません。")
+            QMessageBox.warning(self, "Warning", "No database selected.")
             return
+
+        # モデル不一致チェック
+        db_path = os.path.join(mypath, self.db_combo.currentText())
+        db_model = self.get_database_model(db_path)
+        current_model = self.model_combo.currentText()
+        current_model_id = AVAILABLE_MODELS.get(current_model)
+
+        if db_model and db_model != current_model_id:
+            # データベースのモデル名を表示名に変換
+            db_model_display = None
+            for name, model_id in AVAILABLE_MODELS.items():
+                if model_id == db_model:
+                    db_model_display = name
+                    break
+
+            reply = QMessageBox.warning(
+                self,
+                "Model Mismatch Warning",
+                f"Database was created with {db_model_display or db_model},\n"
+                f"but currently using {current_model}.\n\n"
+                f"Features extracted with different models are not compatible,\n"
+                f"and search results will not be accurate.\n\n"
+                f"Continue anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+
+            if reply == QMessageBox.StandardButton.No:
+                return
 
         try:
             if self.current_image_path:
@@ -1520,7 +1756,7 @@ class DINOv3ImageSearchApp(QMainWindow):
             existing = cursor.fetchone()
 
             if existing:
-                QMessageBox.information(self, "情報", "この画像は既にデータベースに登録されています。")
+                QMessageBox.information(self, "Information", "This image is already registered in the database.")
                 conn.close()
                 return
 
@@ -1543,7 +1779,7 @@ class DINOv3ImageSearchApp(QMainWindow):
                 cursor.execute("DELETE FROM images WHERE id = ?", (image_id,))
                 conn.commit()
                 conn.close()
-                QMessageBox.warning(self, "警告", "特徴量の抽出に失敗しました。画像を追加できませんでした。")
+                QMessageBox.warning(self, "Warning", "Failed to extract features. Could not add image.")
                 return
 
             cursor.execute(
@@ -1551,18 +1787,35 @@ class DINOv3ImageSearchApp(QMainWindow):
                 (image_id, feature_vector.tobytes())
             )
 
+            # モデル情報を設定（未設定の場合のみ）
+            # model_infoテーブルが存在しない場合は作成
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS model_info (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                model_name TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            ''')
+
+            cursor.execute('SELECT model_name FROM model_info WHERE id = 1')
+            existing = cursor.fetchone()
+            if not existing and current_model_id:
+                print(f"[DEBUG] Inserting model info: {current_model_id}")
+                cursor.execute('INSERT INTO model_info (id, model_name) VALUES (1, ?)', (current_model_id,))
+
             conn.commit()
             conn.close()
 
             file_name = os.path.basename(file_path) if file_path else "dropped_image"
-            QMessageBox.information(self, "成功", f"画像「{file_name}」をデータベースに追加しました。")
+            QMessageBox.information(self, "Success", f"Image \"{file_name}\" added to database.")
 
             self.update_image_count()
-            self.update_status(f"画像「{file_name}」をデータベースに追加しました。")
+            self.update_status(f"Image \"{file_name}\" added to database.")
 
         except Exception as e:
-            QMessageBox.critical(self, "エラー", f"データベースへの追加中にエラーが発生しました:\n{str(e)}")
-            print(f"DB追加エラー: {e}")
+            QMessageBox.critical(self, "Error", f"Error occurred while adding to database:\n{str(e)}")
+            print(f"DB add error: {e}")
             import traceback
             traceback.print_exc()
 
