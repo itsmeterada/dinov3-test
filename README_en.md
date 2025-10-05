@@ -11,9 +11,11 @@ An image search application using DINOv3 (Vision Transformer). Provides a beauti
 - **DINOv3 Model**: Uses Facebook's latest self-supervised learning model
 - **Image Search**: Search for similar images from an image
 - **Database Management**: Persist features with SQLite
+- **Image Deletion**: Delete unwanted images from database via search results
 - **Folder/ZIP Processing**: Batch image registration
 - **Beautiful GUI**: Modern UI with PyQt6
 - **Drag & Drop**: Easy operation
+- **Multiple Image Formats**: Supports JPEG, PNG, BMP, GIF, WebP, AVIF, TIFF, JFIF
 
 ## Installation
 
@@ -59,6 +61,7 @@ The DINOv3 model will be automatically downloaded on the first launch.
 1. Drop or select an image
 2. Similar images are automatically searched and displayed on the right
 3. Color-coded display by similarity (0-100%)
+4. Click "🗑️ Del from DB" button on search results to delete unwanted images
 
 ### 5. Database Management
 
@@ -74,6 +77,7 @@ The DINOv3 model will be automatically downloaded on the first launch.
 - Search for similar images from an image
 - Ranking display by cosine similarity
 - Display top 10 similar images
+- Delete images directly from search results
 
 ### Database
 - Save features with SQLite
@@ -81,6 +85,7 @@ The DINOv3 model will be automatically downloaded on the first launch.
 - Automatic thumbnail generation
 - Automatic model information recording and management
 - Warning function for model mismatch
+- Individual image deletion (automatic re-search after deletion)
 
 ### Batch Processing
 - Batch register images in a folder

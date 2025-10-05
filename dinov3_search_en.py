@@ -163,7 +163,7 @@ class DirectoryProcessorThread(QThread):
             image_files = []
             for root, _, files in os.walk(self.directory_path):
                 for file in files:
-                    if file.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp')):
+                    if file.lower().endswith(('.png', '.jpg', '.jpeg', '.jfif', '.bmp', '.gif', '.webp', '.avif', '.tiff', '.tif')):
                         image_files.append(os.path.join(root, file))
 
             total_files = len(image_files)
@@ -297,7 +297,7 @@ class ZipProcessorThread(QThread):
 
                 # 画像ファイルのみをフィルタリング
                 image_files = [f for f in file_list
-                              if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp'))
+                              if f.lower().endswith(('.png', '.jpg', '.jpeg', '.jfif', '.bmp', '.gif', '.webp', '.avif', '.tiff', '.tif'))
                               and not f.startswith('__MACOSX/')  # macOSの隠しファイルを除外
                               and not os.path.basename(f).startswith('.')]  # 隠しファイルを除外
 
@@ -498,8 +498,11 @@ class FeatureExtractor:
 
 class SimilarImageWidget(QWidget):
     """類似画像表示ウィジェット"""
+    delete_requested = pyqtSignal(int)  # 削除リクエストシグナル（image_id）
+
     def __init__(self):
         super().__init__()
+        self.image_id = None
         self.setup_ui()
 
     def setup_ui(self):
@@ -537,11 +540,38 @@ class SimilarImageWidget(QWidget):
         """)
         layout.addWidget(self.info_label)
 
+        # 削除ボタン
+        self.delete_button = QPushButton("🗑️ Del from DB")
+        self.delete_button.setFixedHeight(25)
+        self.delete_button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['danger']};
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 4px;
+                font-size: 10px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: #C82333;
+            }}
+            QPushButton:pressed {{
+                background-color: #A71D2A;
+            }}
+        """)
+        self.delete_button.clicked.connect(self.on_delete_clicked)
+        self.delete_button.setVisible(False)
+        layout.addWidget(self.delete_button)
+
     def set_image_data(self, image_data):
         """画像データを設定"""
         if not image_data:
             self.clear()
             return
+
+        # 画像IDを保存
+        self.image_id = image_data["id"]
 
         # 画像を表示（アスペクト比を保持）
         pixmap = QPixmap()
@@ -601,8 +631,17 @@ class SimilarImageWidget(QWidget):
             }}
         """)
 
+        # 削除ボタンを表示
+        self.delete_button.setVisible(True)
+
+    def on_delete_clicked(self):
+        """削除ボタンがクリックされた時の処理"""
+        if self.image_id is not None:
+            self.delete_requested.emit(self.image_id)
+
     def clear(self):
         """表示をクリア"""
+        self.image_id = None
         self.image_label.clear()
         self.image_label.setText("No Image")
         self.info_label.clear()
@@ -616,6 +655,7 @@ class SimilarImageWidget(QWidget):
                 font-weight: bold;
             }}
         """)
+        self.delete_button.setVisible(False)
 
 class DropAreaWidget(QLabel):
     """ドラッグ＆ドロップエリア"""
@@ -1165,6 +1205,7 @@ class DINOv3ImageSearchApp(QMainWindow):
         for row in range(2):
             for col in range(5):
                 widget = SimilarImageWidget()
+                widget.delete_requested.connect(self.on_image_delete_requested)
                 self.similar_widgets.append(widget)
                 similar_layout.addWidget(widget, row, col)
 
@@ -1383,7 +1424,7 @@ class DINOv3ImageSearchApp(QMainWindow):
 
         for file_path in files:
             if os.path.isfile(file_path):
-                if file_path.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp')):
+                if file_path.lower().endswith(('.png', '.jpg', '.jpeg', '.jfif', '.bmp', '.gif', '.webp', '.avif', '.tiff', '.tif')):
                     self.process_image_file(file_path)
                     break
                 elif file_path.lower().endswith('.zip'):
@@ -1401,7 +1442,7 @@ class DINOv3ImageSearchApp(QMainWindow):
 
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Select Image", "",
-            "画像ファイル (*.jpg *.jpeg *.png *.bmp *.gif *.webp)"
+            "Image Files (*.jpg *.jpeg *.jfif *.png *.bmp *.gif *.webp *.avif *.tiff *.tif)"
         )
 
         if file_path:
@@ -1697,6 +1738,50 @@ class DINOv3ImageSearchApp(QMainWindow):
         for widget in self.similar_widgets:
             widget.clear()
         self.update_status("画像表示をクリアしました。")
+
+    def on_image_delete_requested(self, image_id):
+        """画像削除リクエスト処理"""
+        reply = QMessageBox.question(
+            self,
+            "Delete Confirmation",
+            "Do you want to delete this image from the database?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.delete_image_from_db(image_id)
+
+    def delete_image_from_db(self, image_id):
+        """データベースから画像を削除"""
+        try:
+            db_path = os.path.join(mypath, self.db_combo.currentText())
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+
+            # 特徴量を削除
+            cursor.execute("DELETE FROM features WHERE image_id = ?", (image_id,))
+
+            # 画像を削除
+            cursor.execute("DELETE FROM images WHERE id = ?", (image_id,))
+
+            conn.commit()
+            conn.close()
+
+            # 画像カウントを更新
+            self.update_image_count()
+
+            # 検索結果を再表示（現在の画像で再検索）
+            if self.current_image and self.model_loaded:
+                feature_vector = self.feature_extractor.extract_features(self.current_image)
+                if feature_vector is not None:
+                    self.search_similar_images(feature_vector)
+
+            self.update_status(f"Deleted image ID {image_id}.")
+
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Error occurred while deleting image:\n{str(e)}")
+            self.update_status(f"Delete error: {e}")
 
     def add_current_image_to_db(self):
         """現在表示中の画像をデータベースに追加"""
