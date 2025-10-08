@@ -242,6 +242,9 @@ class DirectoryProcessorThread(QThread):
             # サムネイル作成
             thumbnail = image.copy()
             thumbnail.thumbnail((150, 150))
+            # RGBAの場合はRGBに変換
+            if thumbnail.mode == 'RGBA':
+                thumbnail = thumbnail.convert('RGB')
             buffer = io.BytesIO()
             thumbnail.save(buffer, format="JPEG")
             thumbnail_bytes = buffer.getvalue()
@@ -398,6 +401,9 @@ class ZipProcessorThread(QThread):
             # サムネイル作成
             thumbnail = image.copy()
             thumbnail.thumbnail((150, 150))
+            # RGBAの場合はRGBに変換
+            if thumbnail.mode == 'RGBA':
+                thumbnail = thumbnail.convert('RGB')
             buffer = io.BytesIO()
             thumbnail.save(buffer, format="JPEG")
             thumbnail_bytes = buffer.getvalue()
@@ -1847,6 +1853,9 @@ class DINOv3ImageSearchApp(QMainWindow):
 
             thumbnail = self.current_image.copy()
             thumbnail.thumbnail((150, 150))
+            # RGBAの場合はRGBに変換
+            if thumbnail.mode == 'RGBA':
+                thumbnail = thumbnail.convert('RGB')
             buffer = io.BytesIO()
             thumbnail.save(buffer, format="JPEG")
             thumbnail_bytes = buffer.getvalue()
